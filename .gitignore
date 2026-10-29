@@ -35,3 +35,6 @@ scripts/_*.b64
 
 # 本地构建/测试临时目录（esbuild 缓存，勿提交）
 .tmp-esbuild/
+
+# 浏览器验证截图（本地产物，勿提交）
+browser-screenshots/
