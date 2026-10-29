@@ -3,7 +3,7 @@
     <el-card shadow="never">
       <template #header>
         <div class="msg-header">
-          <el-radio-group v-model="msgType" size="small" @change="loadMsg">
+          <el-radio-group v-model="msgType" size="small" @change="loadMsg()">
             <el-radio-button value="all">全部消息</el-radio-button>
             <el-radio-button value="task">任务通知</el-radio-button>
             <el-radio-button value="qa">质检通知</el-radio-button>
@@ -25,7 +25,11 @@
           <div class="msg-content">
             <div class="msg-title">{{ item.title }}</div>
             <div class="msg-desc">{{ item.content }}</div>
-            <div class="msg-time">{{ item.createdAt }}<span v-if="item.refId" class="msg-go">点击查看详情 →</span></div>
+            <div class="msg-time">
+              {{ item.createdAt }}
+              <span v-if="!item.mine && item.toNames && item.toNames.length" class="msg-to">（发给 {{ item.toNames.join('、') }}）</span>
+              <span v-if="item.refId" class="msg-go">点击查看详情 →</span>
+            </div>
           </div>
           <div v-if="!item.read" class="unread-dot"></div>
         </div>
@@ -33,7 +37,7 @@
       </div>
 
       <el-pagination v-if="total > pageSize" v-model:current-page="page" :page-size="pageSize" :total="total"
-        layout="prev, pager, next" @current-change="loadMsg" style="margin-top:16px;text-align:right" />
+        layout="prev, pager, next" @current-change="loadMsg()" style="margin-top:16px;text-align:right" />
     </el-card>
 
     <el-card v-if="userStore.isAdmin" shadow="hover" style="margin-top:16px">
@@ -59,13 +63,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted, reactive } from 'vue'
+import { ref, onMounted, onUnmounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { Bell, Document, Warning } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { fetchNotifications, markRead, markAllRead } from '@/api/notifications.js'
 import { getFeishuWebhookApi, setFeishuWebhookApi, pushFeishuApi } from '@/api/feishu.js'
 import { useUserStore } from '@/store/user.js'
+import { FEATURES, ROLE_TYPE, canAccessBills, hasAnyRole } from '@/utils/constants'
 
 const userStore = useUserStore()
 const router = useRouter()
@@ -108,16 +113,17 @@ async function onTestPush() {
 
 const iconColor = (type) => ({ task: '#409eff', qa: '#f56c6c', system: '#909399' }[type] || '#909399')
 
-async function loadMsg() {
-  loading.value = true
+async function loadMsg(silent = false) {
+  if (!silent) loading.value = true
+  else if (loading.value) return
   try {
     const params = { page: page.value, pageSize, type: msgType.value === 'all' ? '' : msgType.value }
     const res = await fetchNotifications(params)
     msgList.value = res.data || []
     total.value = res.meta?.total || 0
     userStore.unReadMsg = res.meta?.unread || 0
-  } catch { msgList.value = []; total.value = 0 }
-  finally { loading.value = false }
+  } catch { if (!silent) { msgList.value = []; total.value = 0 } }
+  finally { if (!silent) loading.value = false }
 }
 
 async function readMsg(item) {
@@ -126,10 +132,27 @@ async function readMsg(item) {
   }
 }
 
-// 点击消息：标记已读并跳转到关联任务详情
+// 点击消息：标记已读并跳转到关联对象
+// refType 与后端 createNotification 传入口径一致：
+//   bill      → 结算确认单（bills 页带 ?id 直接开抽屉；纯供应商只能走项目页）
+//   settlement→ 统结/结算汇总（财务、管理员去财务结算页，其余落到结算确认页）
+//   task/qa/item → 数据生产域任务详情（该域关闭时跳过去会被路由守卫弹回首页，故不跳）
 function onMsgClick(item) {
   readMsg(item)
-  if (item.refId && ['task', 'qa', 'item'].includes(item.refType)) {
+  if (!item.refId) return
+  const me = userStore.userInfo
+  if (item.refType === 'bill') {
+    if (canAccessBills(me)) router.push({ path: '/finance/bills', query: { id: item.refId } })
+    else router.push({ path: '/supplier/projects', query: { billId: item.refId } })
+    return
+  }
+  if (item.refType === 'settlement') {
+    if (hasAnyRole(me, [ROLE_TYPE.CLIENT_PM, ROLE_TYPE.FINANCE])) router.push('/finance/settlement')
+    else if (canAccessBills(me)) router.push('/finance/bills')
+    else router.push('/supplier/projects')
+    return
+  }
+  if (FEATURES.DATA_MODULE && ['task', 'qa', 'item'].includes(item.refType)) {
     router.push('/task/detail/' + item.refId)
   }
 }
@@ -138,7 +161,25 @@ async function markAll() {
   try { await markAllRead(); msgList.value.forEach(i => i.read = true); userStore.unReadMsg = 0; ElMessage.success('全部已读') } catch {}
 }
 
-onMounted(() => { loadMsg(); loadWebhook() })
+// 页面开着时自动刷新：别人确认/驳回后不用手动 F5 才能看到新消息（30s 一次，页面隐藏时跳过）
+const REFRESH_MS = 30000
+let refreshTimer = null
+function refreshSilently() {
+  if (document.hidden) return
+  loadMsg(true)
+}
+
+onMounted(() => {
+  loadMsg(); loadWebhook()
+  refreshTimer = setInterval(refreshSilently, REFRESH_MS)
+  window.addEventListener('focus', refreshSilently)
+  document.addEventListener('visibilitychange', refreshSilently)
+})
+onUnmounted(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+  window.removeEventListener('focus', refreshSilently)
+  document.removeEventListener('visibilitychange', refreshSilently)
+})
 </script>
 
 <style scoped>
@@ -152,6 +193,7 @@ onMounted(() => { loadMsg(); loadWebhook() })
 .msg-desc { color: #606266; font-size: 14px; margin-bottom: 6px; line-height: 1.5; }
 .msg-time { color: #909399; font-size: 12px; }
 .msg-go { margin-left: 10px; color: var(--primary); font-weight: 500; }
+.msg-to { margin-left: 8px; color: #e6a23c; }
 .msg-item.clickable { cursor: pointer; }
 .msg-item.clickable:hover { background: #f5f7fa; }
 .unread-dot { position: absolute; top: 20px; right: 20px; width: 8px; height: 8px; border-radius: 50%; background: #f56c6c; }

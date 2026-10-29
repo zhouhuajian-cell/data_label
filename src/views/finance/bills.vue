@@ -151,7 +151,9 @@ const supplierOptions = ref([])
 const projectOptions = ref([])
 const activeChip = ref('all')
 
-const filters = reactive({ page: 1, pageSize: 20, keyword: '', supplierName: '', projectId: null, status: 'all', scope: '' })
+// 列表分页：固定单页 15 行（超出即出现分页器）
+const PAGE_SIZE = 15
+const filters = reactive({ page: 1, pageSize: PAGE_SIZE, keyword: '', supplierName: '', projectId: null, status: 'all', scope: '' })
 
 const statCards = computed(() => [
   { key: 'todo', val: stats.value.myTodoCount || 0, label: myStage.value ? '待我确认' : '待确认', color: '#e6a23c', scope: 'todo', money: '¥' + formatMoney(stats.value.myTodoAmount) },

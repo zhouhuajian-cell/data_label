@@ -821,6 +821,9 @@ onMounted(() => {
   if (q.status) statusFilter.value = String(q.status)
   if (q.state) stateFilter.value = String(q.state)
   loadProjects()
+  // 从消息中心点「结算单」消息进来：供应商/独立结算没有结算确认页，直接在本页打开单据详情
+  const billId = Number(q.billId || 0)
+  if (billId) { detailBillId.value = billId; detailVisible.value = true }
   // 回到页面时刷新数据：加最小间隔，避免窗口焦点变化导致列表反复重渲染（也让按钮点击不被重绘打断）
   const refreshOnReturn = () => {
     if (Date.now() - lastLoadAt < 3000) return

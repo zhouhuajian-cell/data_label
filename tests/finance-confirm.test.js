@@ -376,7 +376,7 @@ test('改派工程师：原工程师不再算我的待办，待办被清掉且�
   // 原工程师手里的本单待办被清空，并收到「已改派」
   const mine = notifications.filter(n => Number(n.refId) === bill.id && n.userIds.includes(original.id))
   assert.ok(mine.length >= 2, '原工程师应同时有「待确认」和「已改派」两条')
-  assert.equal(mine.filter(n => !/已改派/.test(n.title)).every(n => n.read), true, '原工程师的本单待办应被置为已读')
+  assert.equal(mine.filter(n => !/已改派/.test(n.title)).every(n => n.read || (n.readBy || []).includes(original.id)), true, '原工程师的本单待办应被置为已读')
   assert.equal(mine.some(n => /已改派/.test(n.title)), true)
 
   // 原工程师既不能在待办列表看到，也不能确认
