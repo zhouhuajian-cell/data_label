@@ -1,8 +1,12 @@
 // 站内消息：管理员看全部、已读按账号隔离（不互相清未读）
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { notifications, users } from '../server/repositories/data.js'
+import { notifications, users, feishuConfig } from '../server/repositories/data.js'
 import { createNotification, getNotifications, markRead, markAllRead } from '../server/services/notifications.js'
+import { feishuQueueSize } from '../server/services/feishu.js'
+
+// 测试进程内关闭飞书推送：绝不向外发请求（createNotification 另外还有测试环境兜底）
+feishuConfig.enabled = false
 
 const admin = { id: 1, userName: '管理员', roleType: 1, roleTypes: [1], disabled: false }
 const engineer = { id: 2, userName: '工程师', roleType: 13, roleTypes: [13], disabled: false }
@@ -14,6 +18,12 @@ function reset() {
 }
 
 const query = (qs = '') => new URLSearchParams(qs)
+
+test('站内消息：测试环境不把消息推到飞书群', () => {
+  reset()
+  createNotification([engineer.id], 'todo', '测试消息', '内容', 'bill', 1)
+  assert.equal(feishuQueueSize(), 0, '测试进程不应产生飞书推送任务')
+})
 
 test('站内消息：管理员可见全部，普通账号只看发给自己的', () => {
   reset()

@@ -29,6 +29,10 @@ function visibleTo(note, user) {
   return note.userIds.length === 0 || note.userIds.map(Number).includes(Number(user.id))
 }
 
+// 单元测试 / 本地演练不要真的往飞书群发消息：
+// `node --test` 会在测试子进程里设置 NODE_TEST_CONTEXT；NODE_ENV=test 也一并视为测试。
+const isTestRun = () => process.env.NODE_ENV === 'test' || !!process.env.NODE_TEST_CONTEXT
+
 // 创建通知：推送给指定的用户或角色范围
 export function createNotification(targetUserIds, type, title, content, refType, refId) {
   const ids = Array.isArray(targetUserIds) ? targetUserIds : (targetUserIds ? [targetUserIds] : [])
@@ -43,6 +47,7 @@ export function createNotification(targetUserIds, type, title, content, refType,
   }
   notifications.push(note)
   // 自动推送飞书（入串行队列，限速+重试，不阻塞主流程）；落投递审计便于在「系统日志」核对
+  if (isTestRun()) return note
   enqueueFeishu(title, content)
     .then(res => {
       auditLogs.push({
