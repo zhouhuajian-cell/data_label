@@ -32,3 +32,6 @@ uploads/
 scripts/_*.mjs
 scripts/_*.sql
 scripts/_*.b64
+
+# 本地构建/测试临时目录（esbuild 缓存，勿提交）
+.tmp-esbuild/
