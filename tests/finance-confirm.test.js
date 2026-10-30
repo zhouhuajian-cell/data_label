@@ -120,6 +120,53 @@ test('正向流转：上传 → 业务工程师 → 财务 → 统结方提交 �
   assert.equal(done.confirms[0].userName, supplierA.userName)
 })
 
+// ===== 统结类单据：OA 确认通过后，成本中心按统结方提交金额二次分摊 =====
+test('统结流程完成：成本中心金额按统结方提交金额重算（比例不变，合计=统结金额）', async () => {
+  const bill = await createBill(supplierA, {
+    projectId: PROJECT_ID, batchName: '统结成本中心-' + (++seq), period: '2036-01',
+    importMode: 'paste',
+    attachments: [{ storedName: 'bills/fixture.csv', originalName: 'f.csv', size: 1 }],
+    // 供应商申报口径：1000 元，60% / 40%
+    costCenters: [{ name: 'M57项目', ratio: 60 }, { name: 'G91项目', ratio: 40 }],
+    items: [{ taskName: 'CC-1', quantity: 10, unitPrice: 100 }]
+  })
+  await assignEngineer(finance, bill.id, { engineerId: ENGINEER_ID })
+  await confirmBill(bizEngineer, bill.id, {})
+  await calculateBill(finance, bill.id, { deduction: 0, taxRate: 0 })
+  await confirmBill(finance, bill.id, {})
+
+  // 统结方提交 1030（较供应商合计 1000 增幅 3%，在 3.5% 红线内）
+  await confirmBill(party, bill.id, {
+    items: [{ taskName: '统结明细', quantity: 1, unitPrice: 1030 }],
+    attachments: [{ storedName: 'bills/fixture.csv', originalName: '统结附件.csv', size: 1 }]
+  })
+  await confirmBill(finance, bill.id, {})
+
+  // 流程未走完前：成本中心仍是供应商申报口径（1000）
+  const mid = await getBillDetail(pm, bill.id)
+  assert.equal(mid.status, 'PENDING_LEADER')
+  assert.equal(mid.costCenters.reduce((s, c) => s + c.amount, 0), 1000)
+  assert.equal(mid.costCenters[0].amount, 600)
+
+  await confirmBill(leader, bill.id, {})
+  await confirmBill(perception, bill.id, {})
+  await confirmBill({ id: OA_ID, roleType: 18, roleTypes: [18], userName: '彭桂苹' }, bill.id, {})
+
+  const done = await getBillDetail(pm, bill.id)
+  assert.equal(done.status, 'APPROVED')
+  assert.equal(done.settlementSubmitted, 1030, '详情应带出统结方提交金额')
+  // 比例保持供应商填报值不变；金额按统结金额 1030 重算，合计精确等于 1030
+  assert.deepEqual(done.costCenters.map(c => ({ name: c.name, ratio: c.ratio })), [
+    { name: 'M57项目', ratio: 60 }, { name: 'G91项目', ratio: 40 }
+  ])
+  assert.equal(done.costCenters[0].amount, 618, '1030 × 60%')
+  assert.equal(done.costCenters[1].amount, 412, '1030 × 40%')
+  assert.equal(Number(done.costCenters.reduce((s, c) => s + c.amount, 0).toFixed(2)), 1030)
+  // 单据自身申报金额与财务核算口径不受影响
+  assert.equal(done.totalAmount, 1000)
+  assert.equal(done.finance.payableAmount, 1000)
+})
+
 test('以项目为导向：缺项目 / 项目不存在 均拒绝；可按项目筛选与汇总', async () => {
   await assert.rejects(() => createBill(supplierA, { batchName: 'x', items: [{ taskName: 'A' }] }),
     err => err.code === 'VALIDATION_ERROR')

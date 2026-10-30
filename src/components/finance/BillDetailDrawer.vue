@@ -213,6 +213,7 @@
           <!-- 成本中心比例与分摊金额（供应商提交内容，内部核对用） -->
           <div class="sec-title">
             成本中心比例（{{ (detail.costCenters || []).length }}）
+            <span v-if="settleCostCenterNote" class="cc-settle-note">{{ settleCostCenterNote }}</span>
           </div>
           <el-table v-if="(detail.costCenters || []).length" :data="detail.costCenters" border size="small" show-summary :summary-method="centerSummaryRow" class="mb16">
             <el-table-column label="成本中心" prop="name" min-width="140" />
@@ -557,6 +558,16 @@ async function onUploaded() {
   await refresh()
 }
 
+// 统结类单据（走统结方流程）在 OA 结算确认完成后，成本中心金额已按「统结方提交金额 × 原占比」
+// 二次分摊（真实成本口径）；这里在标题旁说明基数，避免与单据金额对不上时被误认为算错。
+const settleCostCenterNote = computed(() => {
+  const d = detail.value
+  if (!d || d.status !== 'APPROVED') return ''
+  const basis = Number(d.settlementSubmitted)
+  if (!(basis > 0) || !(d.costCenters || []).length) return ''
+  return `已按统结金额 ¥${formatMoney(basis)} 二次分摊（占比为供应商填报）`
+})
+
 // 成本中心合计行（占比合计应为 100%，金额合计应等于结算金额）
 function centerSummaryRow({ columns, data }) {
   const sums = []
@@ -630,6 +641,8 @@ defineExpose({ refresh })
   border-radius: 3px 8px 8px 3px;
 }
 .sec-title:first-child { margin-top: 4px; }
+/* 成本中心二次分摊说明（统结口径基数） */
+.cc-settle-note { font-size: 12px; font-weight: 400; color: #b88230; }
 /* 统结金额记录：当 log 收起，省地方 */
 .log-collapse :deep(.el-collapse-item__header) { height: auto; min-height: 40px; line-height: 1.4; padding: 4px 0; }
 .log-collapse :deep(.el-collapse-item__content) { padding-bottom: 6px; }
