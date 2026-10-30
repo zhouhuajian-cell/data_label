@@ -14,33 +14,47 @@ const STATUS_LABELS = { active: '进行中', completed: '已完成', paused: '�
 
 // ===== 项目建立规则：一个客户/供应商只建一个项目，按月提交结算单 =====
 // 结算周期填在单据上（YYYY-MM），项目名不要带月份/期次。
-// 历史数据里有过「东嘉-2026-08标注数据」「烁雨-2026-8」这类按月重复建的项目，
-// 这里按「项目基础名」判重（去尾部业务词 + 年月），避免继续按月建项目。
-const MONTH_SUFFIX_RE = /\s*[-_—·]?\s*(?:19|20)\d{2}\s*[-_.年]?\s*(?:0?[1-9]|1[0-2])\s*月?\s*$/
+// 判重口径（projectNameKey）：
+//   1) 去掉任意位置的月份/期次写法：2026-08、2026年8月、202608、8月、8月份、第3期、Q2 等；
+//   2) 去掉尾部业务词（标注数据/验收数据/结算数据）与公司后缀（有限公司/科技有限公司…）；
+//   3) 去空格/标点、转小写后比较。
+// 这样「贵州元壤智能8月」「贵州元壤智能科技有限公司」「贵州元壤智能」都视为同一个项目。
+const MONTH_TOKEN_SRC = '(?:19|20)\\d{2}\\s*[-_.年/]?\\s*(?:0?[1-9]|1[0-2])\\s*月?(?:\\s*份)?'
+  + '|(?:^|[^\\d])(?:0?[1-9]|1[0-2])\\s*月份?'
+  + '|[一二三四五六七八九十]{1,3}\\s*月份?'
+  + '|第\\s*[0-9一二三四五六七八九十]+\\s*期'
+  + '|(?:^|[^A-Za-z0-9])[Qq][1-4](?![A-Za-z0-9])'
+const MONTH_TOKEN_RE = new RegExp(MONTH_TOKEN_SRC)
+const MONTH_TOKEN_RE_G = new RegExp(MONTH_TOKEN_SRC, 'g')
 const DATA_SUFFIX_RE = /\s*(?:标注数据|验收数据|结算数据)\s*$/
+const COMPANY_SUFFIX_RE = /(?:有限责任公司|股份有限公司|科技有限公司|有限公司|科技公司|分公司|公司|集团|事业部)$/
+const PUNCT_RE = /[（）()【】[\]、,，.。·\-_—/\\]/g
 
-export function projectBaseName(name) {
-  const s = String(name || '').trim()
+// 项目去重键（与前端新建项目校验、数据归类保持同一思路）
+export function projectNameKey(name) {
+  let s = String(name || '').trim()
   if (!s) return ''
-  return s.replace(DATA_SUFFIX_RE, '').trim().replace(MONTH_SUFFIX_RE, '').trim() || s
-}
-
-function hasMonthSuffix(name) {
-  return MONTH_SUFFIX_RE.test(String(name || '').trim().replace(DATA_SUFFIX_RE, '').trim())
+  s = s.replace(/\s+/g, '').replace(MONTH_TOKEN_RE_G, '')
+  for (let i = 0; i < 3; i++) {
+    const next = s.replace(DATA_SUFFIX_RE, '').replace(COMPANY_SUFFIX_RE, '').replace(PUNCT_RE, '')
+    if (next === s) break
+    s = next
+  }
+  return s.trim().toLowerCase()
 }
 
 function assertProjectNameAvailable(name, ignoreId = null) {
   const trimmed = String(name || '').trim()
   if (!trimmed) throw new ApiError(422, 'VALIDATION_ERROR', '请输入项目名称')
-  if (hasMonthSuffix(trimmed)) {
+  if (MONTH_TOKEN_RE.test(trimmed)) {
     throw new ApiError(422, 'PROJECT_NAME_INVALID',
-      '项目名称不要带结算月份/期次：一个项目只建一次，在该项目下按月提交结算单，结算周期在单据上填真实月份（如 2026-08）')
+      '项目名称不要带结算月份/期次（如 2026-08、8月、第3期）：一个项目只建一次，在该项目下按月提交结算单，结算周期在单据上填真实月份')
   }
-  const base = projectBaseName(trimmed)
-  const hit = projects.find(p => Number(p.id) !== Number(ignoreId) && projectBaseName(p.name) === base)
+  const key = projectNameKey(trimmed)
+  const hit = projects.find(p => Number(p.id) !== Number(ignoreId) && projectNameKey(p.name) === key)
   if (hit) {
     throw new ApiError(409, 'PROJECT_DUPLICATE',
-      `已存在项目「${hit.name}」，请直接在该项目下按月提交结算单（结算周期填真实月份），不要按月份重复建项目`)
+      `已存在项目「${hit.name}」，请直接在该项目下按月提交结算单（结算周期填真实月份），不要重复建项目`)
   }
 }
 

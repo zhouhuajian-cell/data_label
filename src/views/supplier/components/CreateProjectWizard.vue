@@ -53,11 +53,11 @@ const createVisible = ref(false)
 const formRef = ref(null)
 const createForm = reactive({ name: '', bizType: '标注', annotateType: '', deadline: '', description: '' })
 // 项目名不允许带月份/期次（一个月一个项目会导致同一项目被拆散、成本中心/结算无法按月归类）
-const MONTH_SUFFIX_RE = /\s*[-_—·]?\s*(?:19|20)\d{2}\s*[-_.年]?\s*(?:0?[1-9]|1[0-2])\s*月?\s*$/
+// 覆盖：2026-08、2026年8月、202608、8月、8月份、第3期、Q2 等写法
+const MONTH_TOKEN_RE = /(?:19|20)\d{2}\s*[-_.年/]?\s*(?:0?[1-9]|1[0-2])\s*月?(?:\s*份)?|(?:^|[^\d])(?:0?[1-9]|1[0-2])\s*月份?|[一二三四五六七八九十]{1,3}\s*月份?|第\s*[0-9一二三四五六七八九十]+\s*期|(?:^|[^A-Za-z0-9])[Qq][1-4](?![A-Za-z0-9])/
 function validateProjectName(rule, value, callback) {
-  const v = String(value || '').trim().replace(/\s*(?:标注数据|验收数据|结算数据)\s*$/, '')
-  if (MONTH_SUFFIX_RE.test(v)) {
-    callback(new Error('项目名不要带月份：请在原项目下按月提交结算单，结算周期填真实月份'))
+  if (MONTH_TOKEN_RE.test(String(value || '').trim())) {
+    callback(new Error('项目名不要带月份/期次（如 8月、2026-08、第3期）：请在原项目下按月提交结算单，结算周期填真实月份'))
     return
   }
   callback()

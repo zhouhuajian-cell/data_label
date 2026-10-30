@@ -8,15 +8,17 @@ import { createProject, updateProject, importProjects } from '../server/services
 
 const pm = { id: 1, roleType: 1, roleTypes: [1], userName: '管理员' }
 
-test('项目建立：一个客户一个项目，名称不能带月份/期次', () => {
+test('项目建立：一个客户一个项目，名称任何位置都不能带月份/期次', () => {
   projects.splice(0, projects.length)
   const p = createProject(pm, { name: '东嘉' })
   assert.equal(p.name, '东嘉')
-  // 历史式「供应商-年月」命名一律拒绝
-  assert.throws(() => createProject(pm, { name: '东嘉-2026-09标注数据' }), e => e.code === 'PROJECT_NAME_INVALID')
-  assert.throws(() => createProject(pm, { name: '东嘉-2026-08' }), e => e.code === 'PROJECT_NAME_INVALID')
-  // 同名/同基础名重复建项目被拒（引导到原项目下按月提结算单）
+  // 各种月份/期次写法（后缀、中间、纯中文月份）都拒绝
+  for (const name of ['东嘉-2026-09标注数据', '东嘉-2026-08', '东嘉8月', '东嘉 2026年8月', '东嘉8月份', '东嘉第3期', '东嘉Q2']) {
+    assert.throws(() => createProject(pm, { name }), e => e.code === 'PROJECT_NAME_INVALID', `应拒绝：${name}`)
+  }
+  // 同名 / 同「项目名键」重复建项目被拒（引导到原项目下按月提结算单）
   assert.throws(() => createProject(pm, { name: '东嘉' }), e => e.code === 'PROJECT_DUPLICATE')
+  assert.throws(() => createProject(pm, { name: '东嘉科技有限公司' }), e => e.code === 'PROJECT_DUPLICATE')
   assert.equal(projects.length, 1)
 })
 
@@ -24,6 +26,10 @@ test('项目建立：改名与批量导入同样受单项目规则约束', () =>
   projects.splice(0, projects.length)
   const a = createProject(pm, { name: '烁雨' })
   createProject(pm, { name: '贵州元壤智能科技有限公司' })
+
+  // 全称/简称/带月份写法都归到同一个项目键
+  assert.throws(() => createProject(pm, { name: '贵州元壤智能' }), e => e.code === 'PROJECT_DUPLICATE')
+  assert.throws(() => createProject(pm, { name: '贵州元壤智能8月' }), e => e.code === 'PROJECT_NAME_INVALID')
 
   assert.throws(() => updateProject(pm, a.id, { name: '烁雨-2026-10' }), e => e.code === 'PROJECT_NAME_INVALID')
   assert.throws(() => updateProject(pm, a.id, { name: '贵州元壤智能科技有限公司' }), e => e.code === 'PROJECT_DUPLICATE')
