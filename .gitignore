@@ -38,3 +38,6 @@ scripts/_*.b64
 
 # 浏览器验证截图（本地产物，勿提交）
 browser-screenshots/
+
+# 临时提交信息文件
+.git-msg*.tmp
