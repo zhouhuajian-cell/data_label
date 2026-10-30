@@ -2,7 +2,8 @@
   <el-dialog v-model="createVisible" title="新建项目" width="560px" :close-on-click-modal="false" @closed="resetCreate">
     <el-form ref="formRef" :model="createForm" :rules="rules" label-width="90px" style="margin-top:6px">
       <el-form-item label="项目名称" prop="name">
-        <el-input v-model="createForm.name" placeholder="建议：供应商名字 + 结算月份，如 壹莱倍-2026-09" />
+        <el-input v-model="createForm.name" placeholder="按客户/供应商建一个项目，如：东嘉（不要带月份）" />
+        <div class="form-hint">一个项目只建一次；之后每个月在同一项目下提交一张结算单，结算周期在单据里填真实月份（如 2026-08）。</div>
       </el-form-item>
       <el-row :gutter="16">
         <el-col :span="12">
@@ -51,8 +52,21 @@ const actionLoading = ref(false)
 const createVisible = ref(false)
 const formRef = ref(null)
 const createForm = reactive({ name: '', bizType: '标注', annotateType: '', deadline: '', description: '' })
+// 项目名不允许带月份/期次（一个月一个项目会导致同一项目被拆散、成本中心/结算无法按月归类）
+const MONTH_SUFFIX_RE = /\s*[-_—·]?\s*(?:19|20)\d{2}\s*[-_.年]?\s*(?:0?[1-9]|1[0-2])\s*月?\s*$/
+function validateProjectName(rule, value, callback) {
+  const v = String(value || '').trim().replace(/\s*(?:标注数据|验收数据|结算数据)\s*$/, '')
+  if (MONTH_SUFFIX_RE.test(v)) {
+    callback(new Error('项目名不要带月份：请在原项目下按月提交结算单，结算周期填真实月份'))
+    return
+  }
+  callback()
+}
 const rules = {
-  name: [{ required: true, message: '请输入项目名称', trigger: 'blur' }]
+  name: [
+    { required: true, message: '请输入项目名称', trigger: 'blur' },
+    { validator: validateProjectName, trigger: 'blur' }
+  ]
   // 数据类型选填；业务类型有默认值「标注」
 }
 
@@ -81,3 +95,7 @@ async function submitCreate() {
   } finally { actionLoading.value = false }
 }
 </script>
+
+<style scoped>
+.form-hint { margin-top: 4px; font-size: 12px; line-height: 1.6; color: var(--text-3, #909399); }
+</style>

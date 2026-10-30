@@ -12,6 +12,38 @@ const cleanerRole = 7
 const VALID_STATUSES = ['active', 'completed', 'paused', 'archived']
 const STATUS_LABELS = { active: '进行中', completed: '已完成', paused: '已暂停', archived: '已归档' }
 
+// ===== 项目建立规则：一个客户/供应商只建一个项目，按月提交结算单 =====
+// 结算周期填在单据上（YYYY-MM），项目名不要带月份/期次。
+// 历史数据里有过「东嘉-2026-08标注数据」「烁雨-2026-8」这类按月重复建的项目，
+// 这里按「项目基础名」判重（去尾部业务词 + 年月），避免继续按月建项目。
+const MONTH_SUFFIX_RE = /\s*[-_—·]?\s*(?:19|20)\d{2}\s*[-_.年]?\s*(?:0?[1-9]|1[0-2])\s*月?\s*$/
+const DATA_SUFFIX_RE = /\s*(?:标注数据|验收数据|结算数据)\s*$/
+
+export function projectBaseName(name) {
+  const s = String(name || '').trim()
+  if (!s) return ''
+  return s.replace(DATA_SUFFIX_RE, '').trim().replace(MONTH_SUFFIX_RE, '').trim() || s
+}
+
+function hasMonthSuffix(name) {
+  return MONTH_SUFFIX_RE.test(String(name || '').trim().replace(DATA_SUFFIX_RE, '').trim())
+}
+
+function assertProjectNameAvailable(name, ignoreId = null) {
+  const trimmed = String(name || '').trim()
+  if (!trimmed) throw new ApiError(422, 'VALIDATION_ERROR', '请输入项目名称')
+  if (hasMonthSuffix(trimmed)) {
+    throw new ApiError(422, 'PROJECT_NAME_INVALID',
+      '项目名称不要带结算月份/期次：一个项目只建一次，在该项目下按月提交结算单，结算周期在单据上填真实月份（如 2026-08）')
+  }
+  const base = projectBaseName(trimmed)
+  const hit = projects.find(p => Number(p.id) !== Number(ignoreId) && projectBaseName(p.name) === base)
+  if (hit) {
+    throw new ApiError(409, 'PROJECT_DUPLICATE',
+      `已存在项目「${hit.name}」，请直接在该项目下按月提交结算单（结算周期填真实月份），不要按月份重复建项目`)
+  }
+}
+
 function requireBuyer(user) {
   if (!hasAnyRole(user, [buyerRole, qaRole, cleanerRole])) {
     throw new ApiError(403, 'FORBIDDEN', '只有甲方、质检或数据清洗角色可以执行该操作')
@@ -104,6 +136,7 @@ export function createProject(user, body) {
   const datasetId = body.datasetId ? Number(body.datasetId) : null
 
   if (!name) throw new ApiError(422, 'VALIDATION_ERROR', '请输入项目名称')
+  assertProjectNameAvailable(name)
   // 数据类型（annotateType）：选填，也可自定义填写
   // 业务类型（bizType）：选填，默认「标注」，也允许自定义
   if (bizType.length > 32) throw new ApiError(422, 'VALIDATION_ERROR', '业务类型最多 32 个字')
@@ -148,6 +181,12 @@ export function updateProject(user, projectId, body) {
   const project = projects.find(p => p.id === projectId)
   if (!project) throw new ApiError(404, 'NOT_FOUND', '项目不存在')
   assertProjectVisible(user, project)
+  // 改名同样受「单项目」规则约束：不能改成带月份的名字，也不能改成与其他项目同基础名
+  if (body.name !== undefined) {
+    const nextName = String(body.name).trim()
+    if (!nextName) throw new ApiError(422, 'VALIDATION_ERROR', '项目名称不能为空')
+    if (nextName !== project.name) assertProjectNameAvailable(nextName, project.id)
+  }
   const updatable = ['name', 'clientName', 'annotateType', 'bizType', 'deadline', 'description', 'template', 'uploadPath']
   for (const key of updatable) {
     if (body[key] !== undefined) project[key] = String(body[key]).trim()
@@ -171,6 +210,12 @@ export function importProjects(user, body) {
   for (const row of rows) {
     const name = String(row.name || row['项目名称'] || '').trim()
     if (!name) continue
+    // 批量导入同样遵守「单项目」规则：带月份/与已有项目同基础名时直接拒绝，避免再造按月项目
+    try {
+      assertProjectNameAvailable(name)
+    } catch (e) {
+      throw new ApiError(e.status || 422, e.code || 'PROJECT_INVALID', `第 ${imported + 1} 行：${e.message}`)
+    }
 
     const project = {
       id: maxId + imported + 1,

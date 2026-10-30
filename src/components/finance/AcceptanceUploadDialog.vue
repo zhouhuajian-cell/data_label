@@ -25,7 +25,7 @@
             <el-form-item label="结算周期" required>
               <el-date-picker v-model="form.period" :disabled="settleMode" type="month" value-format="YYYY-MM" placeholder="选择月份" style="width:100%" />
             </el-form-item>
-        <div v-if="!settleMode" class="tip">统结对比按「同项目 + 同结算周期」汇总，必填</div>
+        <div v-if="!settleMode" class="tip">按真实结算月份填写（YYYY-MM）；统结对比按「同项目 + 同结算周期」汇总</div>
           </el-col>
           <el-col :xs="24" :sm="12" :md="8">
             <el-form-item label="供应商">

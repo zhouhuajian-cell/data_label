@@ -170,6 +170,25 @@ test('统结流程完成：成本中心金额按统结方提交金额重算（�
   assert.equal(done.finance.payableAmount, 1000)
 })
 
+// ===== 结算周期：必须是真实月份 YYYY-MM =====
+test('结算周期：按真实月份 YYYY-MM 填写，乱填直接拒绝', async () => {
+  const base = {
+    projectId: PROJECT_ID, batchName: '周期校验-' + (++seq), importMode: 'paste',
+    attachments: [{ storedName: 'bills/fixture.csv', originalName: 'f.csv', size: 1 }],
+    costCenters: [{ name: 'M57', ratio: 100 }],
+    items: [{ taskName: 'P-1', quantity: 1, unitPrice: 100 }]
+  }
+  await assert.rejects(() => createBill(supplierA, { ...base, period: '2026-13' }), e => e.code === 'PERIOD_INVALID')
+  await assert.rejects(() => createBill(supplierA, { ...base, period: '2026-8' }), e => e.code === 'PERIOD_INVALID')
+  await assert.rejects(() => createBill(supplierA, { ...base, period: '9月' }), e => e.code === 'PERIOD_INVALID')
+
+  const ok = await createBill(supplierA, { ...base, period: '2035-09' })
+  assert.equal(ok.period, '2035-09')
+  await assert.rejects(() => updateBill(supplierA, ok.id, { period: '2035-9' }), e => e.code === 'PERIOD_INVALID')
+  const updated = await updateBill(supplierA, ok.id, { period: '2035-10' })
+  assert.equal(updated.period, '2035-10')
+})
+
 // ===== 成本中心二次分摊只看「当前身份」 =====
 test('成本中心二次分摊：OA 时已是独立结算身份则不按统结金额分摊', async () => {
   const bill = await createBill(supplierA, {

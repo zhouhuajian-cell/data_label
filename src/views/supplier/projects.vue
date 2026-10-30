@@ -798,11 +798,11 @@ const deleteItem = async (taskId, item) => {
   try { await deleteTaskItemApi(taskId, item.id); const idx = taskItems[taskId]?.indexOf(item); if (idx >= 0) taskItems[taskId].splice(idx, 1); ElMessage.success('明细已删除') } catch { ElMessage.error('删除失败') }
 }
 
-// 批量导入项目
+// 批量导入项目（项目名按客户/供应商，不要带月份；结算周期在每月结算单上填）
 const openImport = () => {
-  ElMessageBox.prompt('批量导入项目（每行一个）：\n项目名称,标注类型,样本数量,截止时间', '导入项目', {
+  ElMessageBox.prompt('批量导入项目（每行一个）：\n项目名称,标注类型,样本数量,截止时间\n注意：一个项目只建一次，名称不要带月份（结算周期在每月结算单上填）', '导入项目', {
     confirmButtonText: '导入', inputType: 'textarea',
-    inputPlaceholder: '示例项目,3D点云标注,50000,2026-09-30\n示例项目2,2D拉框,30000,2026-10-15'
+    inputPlaceholder: '东嘉,3D点云标注,50000,2026-09-30\n烁雨,2D拉框,30000,2026-10-15'
   }).then(async ({ value }) => {
     const rows = value.trim().split('\n').filter(l => l.trim()).map(line => {
       const p = line.split(',').map(s => s.trim())

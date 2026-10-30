@@ -32,6 +32,9 @@ export const MAX_INCREASE_RATE = 0.035
 // 成本中心比例必须合计 100%
 const COST_CENTER_TOTAL = 100
 
+// 结算周期格式：YYYY-MM（真实结算月份）。一个项目下按月提交结算单，不允许乱填期次。
+const PERIOD_RE = /^(19|20)\d{2}-(0[1-9]|1[0-2])$/
+
 // 成本中心：优先按「金额」填（供应商口径）→ 占比自动推算；
 // 兼容直接填占比的老口径。金额口径下金额合计必须等于单据金额（防呆）。
 function normalizeCostCenters(raw, amount) {
@@ -919,9 +922,14 @@ export async function createBill(user, body) {
   }
   const batchName = String(body.batchName || '').trim()
   if (!batchName) throw new ApiError(422, 'VALIDATION_ERROR', '请填写批次名称')
-  // 结算周期必填：统结对比按「同项目 + 同周期」汇总，周期为空会误把不同批次的单累积
-  if (!String(body.period || '').trim()) {
+  // 结算周期必填且必须是真实月份 YYYY-MM：统结对比按「同项目 + 同周期」汇总，
+  // 周期为空/乱填会把不同批次的单错误累积，也无法按月对账。
+  const period = String(body.period || '').trim()
+  if (!period) {
     throw new ApiError(422, 'VALIDATION_ERROR', '请填写结算周期（统结对比按「同项目+同周期」汇总，必填）')
+  }
+  if (!PERIOD_RE.test(period)) {
+    throw new ApiError(422, 'PERIOD_INVALID', `结算周期「${period}」格式不正确，请按真实结算月份填写（格式 YYYY-MM，如 2026-08）`)
   }
   const supplierName = resolveSupplierName(user, body)
   const project = resolveProject(body)
@@ -947,7 +955,7 @@ export async function createBill(user, body) {
     id: nextId(bills),
     billNo: makeBillNo(),
     batchName,
-    period: String(body.period || '').trim(),
+    period,
     ...project,
     supplierId: null,
     supplierName,
@@ -1021,7 +1029,13 @@ export async function updateBill(user, id, body) {
     bill.batchName = batchName
   }
   if (body.projectId !== undefined) Object.assign(bill, resolveProject(body))
-  if (body.period !== undefined) bill.period = String(body.period).trim()
+  if (body.period !== undefined) {
+    const period = String(body.period).trim()
+    if (!PERIOD_RE.test(period)) {
+      throw new ApiError(422, 'PERIOD_INVALID', `结算周期「${period}」格式不正确，请按真实结算月份填写（格式 YYYY-MM，如 2026-08）`)
+    }
+    bill.period = period
+  }
   if (body.remark !== undefined) bill.remark = String(body.remark).trim()
   if (body.sourceFileName !== undefined) bill.sourceFileName = String(body.sourceFileName).trim()
   if (body.attachments !== undefined) bill.attachments = normalizeAttachments(body.attachments) || []
