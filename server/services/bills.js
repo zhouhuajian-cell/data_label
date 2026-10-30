@@ -374,13 +374,21 @@ export async function repairBillStages() {
     // 已完成的单据按历史状态保留（新增末环节不追溯），并把环节序号对齐到链尾
     if (bill.status === 'APPROVED') {
       if (bill.currentStage !== BILL_STAGES.length) { bill.currentStage = BILL_STAGES.length; await saveBill(bill); fixed++ }
-      // 统结类历史单据回填：成本中心按统结方提交金额二次分摊（幂等，已按统结金额分摊过则跳过）
-      const recalc = recalcSettledCostCenters(bill)
-      if (recalc) {
+      // 成本中心口径自愈（幂等）：只看「当前身份」——
+      //   走统结流程 → 按统结金额二次分摊；独立结算/海外采集（即使历史上有统结记录）→ 恢复申报口径
+      const ccFix = isSettlementExempt(bill) || isOverseasCollect(bill)
+        ? restoreCostCentersToBillBase(bill)
+        : recalcSettledCostCenters(bill)
+      if (ccFix) {
+        const isRestore = ccFix.restoredTotal !== undefined
         await saveBill(bill)
-        audit('finance.bill.costCenter.settleRecalc', { id: null, userName: '系统' }, bill, {
-          ...recalc, reason: '启动回填：OA 完成后按统结金额二次分摊成本中心'
-        })
+        audit(isRestore ? 'finance.bill.costCenter.restore' : 'finance.bill.costCenter.settleRecalc',
+          { id: null, userName: '系统' }, bill, {
+            ...ccFix,
+            reason: isRestore
+              ? '启动回填：当前身份非统结流程，恢复成本中心申报口径'
+              : '启动回填：OA 完成后按统结金额二次分摊成本中心'
+          })
         fixed++
       }
       continue
@@ -814,8 +822,8 @@ export async function getBillDetail(user, id) {
       return at >= 0 ? at : 0
     })(),
     increaseCheck: increaseCheck(bill),
-    // 统结方在本单提交的金额（无统结环节 / 未提交时为 null；前端据此说明成本中心二次分摊口径）
-    settlementSubmitted: settlementSubmittedOf(bill),
+    // 成本中心分摊口径的统结金额：只看当前身份（独立结算/海外采集为 null；前端据此说明二次分摊口径）
+    settlementSubmitted: settlementCostCenterBasis(bill),
     // 统结方节点/财务二次确认用：同项目「供应商确认金额合计」（不含统结方自己的单）
     supplierConfirmedTotal: (() => {
       const b = supplierBaseAmount(bill)
@@ -1733,11 +1741,19 @@ export function settlementSubmittedOf(bill) {
   return Number.isFinite(v) ? v : null
 }
 
+// 成本中心二次分摊 / 报表口径使用的统结金额：只看「当前身份」——
+// 独立结算 / 海外采集没有统结方流程，历史上即使有统结提交记录也不采用。
+function settlementCostCenterBasis(bill) {
+  if (isSettlementExempt(bill) || isOverseasCollect(bill)) return null
+  const v = settlementSubmittedOf(bill)
+  return v !== null && v > 0 ? v : null
+}
+
 // 统结类单据全部确认通过后，成本中心金额按「统结方提交金额 × 原占比」二次分摊：
 // 供应商填的金额是申报口径，对外实际结算以统结方提交金额为准，据此得到真实成本分布。
 // 比例保持供应商填报值不变；返回本次调整（无需调整时返回 null，幂等，可用于启动回填）。
 function recalcSettledCostCenters(bill) {
-  const submitted = settlementSubmittedOf(bill)
+  const submitted = settlementCostCenterBasis(bill)
   if (submitted === null || submitted <= 0) return null
   const centers = Array.isArray(bill.costCenters) ? bill.costCenters : []
   if (!centers.length) return null
@@ -1747,6 +1763,20 @@ function recalcSettledCostCenters(bill) {
   bill.costCenters = allocateCostCenters(centers.map(c => ({ name: c.name, ratio: c.ratio })), submitted)
   bill.updatedAt = nowText()
   return { previousTotal, settlementTotal: submitted }
+}
+
+// 当前身份不是统结流程（独立结算 / 海外采集）时，成本中心恢复「单据自身金额 × 原占比」口径。
+// 用于身份变更后的自愈：曾经按统结金额分摊过的单据会被改回申报口径（幂等）。
+function restoreCostCentersToBillBase(bill) {
+  const centers = Array.isArray(bill.costCenters) ? bill.costCenters : []
+  if (!centers.length) return null
+  const base = billAllocBase(bill)
+  if (base <= 0) return null
+  const previousTotal = roundMoney(centers.reduce((sum, c) => sum + (Number(c.amount) || 0), 0))
+  if (Math.abs(previousTotal - base) <= 0.01) return null
+  bill.costCenters = allocateCostCenters(centers.map(c => ({ name: c.name, ratio: c.ratio })), base)
+  bill.updatedAt = nowText()
+  return { previousTotal, restoredTotal: base }
 }
 
 export function settlementSummary(user, query = {}) {
@@ -1770,7 +1800,7 @@ export function settlementSummary(user, query = {}) {
   // 尚未走到统结环节的单据（独立结算供应商、流程中的单）退回单据自己的金额兜底。
   // 只影响本报表的金额汇总，不改动单据的明细、核算与确认记录。
   const payableOf = (b) => {
-    const submitted = settlementSubmittedOf(b)
+    const submitted = settlementCostCenterBasis(b)
     if (submitted !== null) return submitted
     const p = b.finance?.payableAmount
     return Number(p === undefined || p === null ? b.totalAmount : p) || 0

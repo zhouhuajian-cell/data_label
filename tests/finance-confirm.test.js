@@ -2,11 +2,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { config } from '../server/config.js'
-import { feishuConfig, projects, notifications, users } from '../server/repositories/data.js'
+import { feishuConfig, projects, notifications, users, bills } from '../server/repositories/data.js'
 import { hasAnyRole } from '../server/lib/roles.js'
 // 单元测试绝不触碰真实 MySQL：强制财务域走内存回退
 config.db.enabled = false
-import { createBill, confirmBill, rejectBill, resubmitBill, deleteBill, updateBill, getBillDetail, listBills, billStats, calculateBill, assignEngineer } from '../server/services/bills.js'
+import { createBill, confirmBill, rejectBill, resubmitBill, deleteBill, updateBill, getBillDetail, listBills, billStats, calculateBill, assignEngineer, repairBillStages, settlementSummary } from '../server/services/bills.js'
 
 // 测试进程内关闭飞书推送，避免向外发请求
 feishuConfig.enabled = false
@@ -26,6 +26,9 @@ users.push({ id: SECOND_ENGINEER_ID, username: 'eng_b', userName: '赵晓伟', r
 const OA_ID = 903
 users.push({ id: OA_ID, username: 'oa_t', userName: '彭桂苹', roleType: 18, roleTypes: [18], disabled: false })
 const supplierB = { id: 202, roleType: 3, roleTypes: [3], userName: '供应商B交付员' }
+// 独立结算供应商账号（角色 3,19）：成本中心二次分摊只看当前身份，这类账号不参与
+const EXEMPT_SUPPLIER = { id: 208, roleType: 3, roleTypes: [3, 19], userName: '独立结算供应商' }
+users.push({ id: EXEMPT_SUPPLIER.id, username: 'exempt_t', userName: EXEMPT_SUPPLIER.userName, roleType: 3, roleTypes: [3, 19], disabled: false })
 // 指派校验会到 users 集合里核对，故用真实存在的工程师账号 id
 const ENGINEER_ID = 21
 const bizEngineer = { id: ENGINEER_ID, roleType: 13, roleTypes: [13], supplierId: null, userName: '业务工程师' }
@@ -165,6 +168,80 @@ test('统结流程完成：成本中心金额按统结方提交金额重算（�
   // 单据自身申报金额与财务核算口径不受影响
   assert.equal(done.totalAmount, 1000)
   assert.equal(done.finance.payableAmount, 1000)
+})
+
+// ===== 成本中心二次分摊只看「当前身份」 =====
+test('成本中心二次分摊：OA 时已是独立结算身份则不按统结金额分摊', async () => {
+  const bill = await createBill(supplierA, {
+    projectId: PROJECT_ID, batchName: '身份切换-' + (++seq), period: '2036-02',
+    importMode: 'paste',
+    attachments: [{ storedName: 'bills/fixture.csv', originalName: 'f.csv', size: 1 }],
+    costCenters: [{ name: 'M57项目', ratio: 60 }, { name: 'G91项目', ratio: 40 }],
+    items: [{ taskName: 'ID-1', quantity: 10, unitPrice: 100 }]
+  })
+  await assignEngineer(finance, bill.id, { engineerId: ENGINEER_ID })
+  await confirmBill(bizEngineer, bill.id, {})
+  await calculateBill(finance, bill.id, { deduction: 0, taxRate: 0 })
+  await confirmBill(finance, bill.id, {})
+  await confirmBill(party, bill.id, {
+    items: [{ taskName: '统结明细', quantity: 1, unitPrice: 1030 }],
+    attachments: [{ storedName: 'bills/fixture.csv', originalName: '统结附件.csv', size: 1 }]
+  })
+  await confirmBill(finance, bill.id, {})
+  await confirmBill(leader, bill.id, {})
+  await confirmBill(perception, bill.id, {})
+
+  // 模拟账号在流程中被标记为「独立结算」：单据当前身份快照变为非统结流程
+  const stored = bills.find(b => b.id === bill.id)
+  stored.settlementExempt = true
+  const done = await confirmBill({ id: OA_ID, roleType: 18, roleTypes: [18], userName: '彭桂苹' }, bill.id, {})
+  assert.equal(done.status, 'APPROVED')
+  // 即使本单有过统结方提交记录，当前身份不走统结 → 保持申报口径 1000，不按 1030 分摊
+  assert.equal(done.costCenters.reduce((s, c) => s + c.amount, 0), 1000)
+  assert.equal(done.costCenters[0].amount, 600)
+})
+
+test('启动回填：当前身份为独立结算的单据，把历史统结口径分摊恢复为申报口径', async () => {
+  const bill = await createBill(EXEMPT_SUPPLIER, {
+    projectId: PROJECT_ID, batchName: '独立结算成本中心-' + (++seq), period: '2036-03',
+    importMode: 'paste',
+    attachments: [{ storedName: 'bills/fixture.csv', originalName: 'f.csv', size: 1 }],
+    costCenters: [{ name: 'M57项目', ratio: 60 }, { name: 'G91项目', ratio: 40 }],
+    items: [{ taskName: 'EX-1', quantity: 10, unitPrice: 100 }]
+  })
+  await assignEngineer(finance, bill.id, { engineerId: ENGINEER_ID })
+  await confirmBill(bizEngineer, bill.id, {})
+  await calculateBill(finance, bill.id, { deduction: 0, taxRate: 0 })
+  await confirmBill(finance, bill.id, {})
+  await confirmBill(leader, bill.id, {})
+  await confirmBill(perception, bill.id, {})
+  const done = await confirmBill({ id: OA_ID, roleType: 18, roleTypes: [18], userName: '彭桂苹' }, bill.id, {})
+  assert.equal(done.status, 'APPROVED')
+  assert.equal(done.costCenters.reduce((s, c) => s + c.amount, 0), 1000)
+
+  // 模拟「身份切换前曾按统结金额分摊过」：补一条历史统结提交记录 + 统结口径的成本中心金额
+  const stored = bills.find(b => b.id === bill.id)
+  stored.confirms.push({
+    stage: 3, stageKey: 'SETTLEMENT', stageLabel: '统结方提交', roleType: 17,
+    userId: party.id, userName: party.userName, round: stored.resubmitCount || 0,
+    action: 'APPROVE', at: '2026-01-01 00:00:00', settlement: { submittedTotal: 1030 }
+  })
+  stored.costCenters = [
+    { name: 'M57项目', ratio: 60, amount: 618 },
+    { name: 'G91项目', ratio: 40, amount: 412 }
+  ]
+
+  await repairBillStages()
+  const restored = await getBillDetail(pm, bill.id)
+  assert.equal(restored.status, 'APPROVED')
+  assert.equal(Number(restored.costCenters.reduce((s, c) => s + c.amount, 0).toFixed(2)), 1000, '恢复为申报口径')
+  assert.equal(restored.costCenters[0].amount, 600)
+  assert.equal(restored.costCenters[1].amount, 400)
+  assert.equal(restored.settlementSubmitted, null, '独立结算身份不采用历史统结金额')
+  // 仪表盘的成本中心口径同步回申报口径（不因历史统结记录继续放大）
+  const summary = settlementSummary(pm, { period: '2036-03' })
+  const ccTotal = summary.costCenters.reduce((s, c) => s + c.amount, 0)
+  assert.equal(Number(ccTotal.toFixed(2)), 1000)
 })
 
 test('以项目为导向：缺项目 / 项目不存在 均拒绝；可按项目筛选与汇总', async () => {
