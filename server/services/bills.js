@@ -259,6 +259,8 @@ function audit(action, user, bill, extra = {}) {
 // ===== 通知卡片统一模板（站内 + 飞书同一文案）=====
 // 版式：单据信息固定顺序、一行一项 → 空行 → 处理信息（当前环节/处理人/待办事项或结果）→ 空行 → 页脚
 // 提醒类消息不展示金额（金额口径敏感，统一不在通知里出现）。
+// 页脚附平台地址，方便收到通知的人直接打开处理（可用 PLATFORM_URL 环境变量覆盖）。
+const PLATFORM_URL = process.env.PLATFORM_URL || 'http://10.2.248.6/'
 function noticeInfoLines(info) {
   return [
     `结算单：${info.billNo || '-'}`,
@@ -271,7 +273,7 @@ function noticeInfoLines(info) {
 function noticeContent(info, detailLines = []) {
   const lines = noticeInfoLines(info)
   if (detailLines.length) lines.push('', ...detailLines)
-  lines.push('', `数据协作平台 · ${nowText()}`)
+  lines.push('', `数据协作平台 · ${nowText()}`, `平台地址：${PLATFORM_URL}`)
   return lines.join('\n')
 }
 function billNotice(bill, detailLines = []) {
