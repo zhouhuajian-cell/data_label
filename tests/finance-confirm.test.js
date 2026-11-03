@@ -458,7 +458,7 @@ test('每个环节都有提醒：推送对象为「下一节点角色」，文�
   assert.match(hits[0].title, /工程师/)
   assert.match(hits[0].content, /结算单：YS/)
   assert.match(hits[0].content, /项目：测试项目-杭州城区/)
-  assert.match(hits[0].content, /平台地址：http:\/\/10\.2\.248\.6\//, '页脚附平台地址')
+  assert.match(hits[0].content, /请到平台查看并确认：http:\/\/10\.2\.248\.6\//, '页脚提示到平台查看')
   assert.ok(!/¥|金额/.test(hits[0].content), '提醒文案不展示金额')
 
   // 2) 业务工程师确认 → 提醒财务 + 回执提交人

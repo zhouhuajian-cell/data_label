@@ -273,7 +273,7 @@ function noticeInfoLines(info) {
 function noticeContent(info, detailLines = []) {
   const lines = noticeInfoLines(info)
   if (detailLines.length) lines.push('', ...detailLines)
-  lines.push('', `数据协作平台 · ${nowText()}`, `平台地址：${PLATFORM_URL}`)
+  lines.push('', `请到平台查看并确认：${PLATFORM_URL}`)
   return lines.join('\n')
 }
 function billNotice(bill, detailLines = []) {
