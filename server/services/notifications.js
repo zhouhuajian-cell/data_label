@@ -34,7 +34,8 @@ function visibleTo(note, user) {
 const isTestRun = () => process.env.NODE_ENV === 'test' || !!process.env.NODE_TEST_CONTEXT
 
 // 创建通知：推送给指定的用户或角色范围
-export function createNotification(targetUserIds, type, title, content, refType, refId) {
+// options.feishu === false 时只落站内消息、不推飞书（如增幅超限这类只给操作人看的告警）
+export function createNotification(targetUserIds, type, title, content, refType, refId, options = {}) {
   const ids = Array.isArray(targetUserIds) ? targetUserIds : (targetUserIds ? [targetUserIds] : [])
   const note = {
     id: Math.max(...notifications.map(n => n.id), 0) + 1,
@@ -47,7 +48,7 @@ export function createNotification(targetUserIds, type, title, content, refType,
   }
   notifications.push(note)
   // 自动推送飞书（入串行队列，限速+重试，不阻塞主流程）；落投递审计便于在「系统日志」核对
-  if (isTestRun()) return note
+  if (options.feishu === false || isTestRun()) return note
   enqueueFeishu(title, content)
     .then(res => {
       auditLogs.push({
@@ -128,13 +129,13 @@ export function markAllRead(user) {
 
 // 批量创建通知：仅按角色找目标用户（不受 supplierId 限制，用于跨角色的流程节点提醒）
 // 账号可持多角色，命中任一角色即推送
-export function notifyRoles(roles, type, title, content, refType, refId) {
+export function notifyRoles(roles, type, title, content, refType, refId, options = {}) {
   const ids = users.filter(u => !u.disabled && hasAnyRole(u, roles)).map(u => u.id)
-  return createNotification(ids, type, title, content, refType, refId)
+  return createNotification(ids, type, title, content, refType, refId, options)
 }
 
 // 批量创建通知：按角色+供应商ID找目标用户
-export function notifyByRole(supplierName, roles, type, title, content, refType, refId) {
+export function notifyByRole(supplierName, roles, type, title, content, refType, refId, options = {}) {
   const wanted = String(supplierName || '').trim()
   const targets = users.filter(u => {
     if (!hasAnyRole(u, roles)) return false
@@ -142,5 +143,5 @@ export function notifyByRole(supplierName, roles, type, title, content, refType,
     return true
   })
   const ids = targets.map(u => u.id)
-  return createNotification(ids, type, title, content, refType, refId)
+  return createNotification(ids, type, title, content, refType, refId, options)
 }

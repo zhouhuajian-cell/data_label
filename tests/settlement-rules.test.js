@@ -121,9 +121,10 @@ test('增幅超限时：财务确认被拦截，且产生报警通知', async ()
   )
   // 拦截后单据不应前进
   assert.equal((await getBillDetail(pm, bill.id)).status, 'PENDING_FINANCE', '状态保持不变')
-  // 已推送报警（站内 + 飞书同一入口）
+  // 增幅超限告警：只给触发操作的本人站内提醒（不推飞书、不打扰其他角色）
   const alerts = notifications.slice(mark).filter(n => (n.title || '').includes('增幅超限'))
   assert.equal(alerts.length >= 1, true, '应产生超限报警通知')
+  assert.deepEqual(alerts[0].userIds, [finance.id], '告警只发给触发本次操作的财务本人')
   assert.match(alerts[0].content, /供应商提交金额/)
   assert.match(alerts[0].content, /上限 3.5%/)
 
@@ -193,6 +194,7 @@ test('统一结算：统结方提交总金额增幅超 3.5% → 报警且提交�
   )
   const alerts = notifications.slice(mark).filter(n => (n.title || '').includes('统一结算增幅超限'))
   assert.equal(alerts.length >= 1, true, '应产生统结超限报警')
+  assert.deepEqual(alerts[0].userIds, [finance.id], '告警只发给触发本次操作的财务本人')
   assert.match(alerts[0].content, /供应商确认金额合计/)
   assert.match(alerts[0].content, /统结方提交总金额/)
   assert.match(alerts[0].content, /柏川/)
@@ -343,7 +345,9 @@ test('统结方提交（导入解析）→ 财务二次确认：超 3.5% 报警�
   // 财务二次确认：增幅超 3.5% → 报警 + 拦截，状态不前进
   const mark = notifications.length
   await assert.rejects(() => confirmBill(finance, bill.id, {}), err => err.code === 'INCREASE_LIMIT_EXCEEDED')
-  assert.equal(notifications.slice(mark).some(n => (n.title || '').includes('统结增幅超限')), true, '应推送报警')
+  const finAlerts = notifications.slice(mark).filter(n => (n.title || '').includes('统结增幅超限'))
+  assert.equal(finAlerts.length >= 1, true, '应产生统结增幅超限告警')
+  assert.deepEqual(finAlerts[0].userIds, [finance.id], '告警只发给触发本次操作的财务本人')
   assert.equal((await getBillDetail(pm, bill.id)).status, 'PENDING_FINANCE2', '状态不前进')
 
   // 统结方改正后重新提交（不必整单退回供应商）→ 财务二次确认通过

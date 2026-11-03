@@ -282,6 +282,12 @@ function billNoticeTitle(event, bill) {
   const project = bill?.projectName ? ` · ${bill.projectName}` : ''
   return `【${event}】${bill?.billNo || ''}${project}`
 }
+// 增幅超限类告警：不推飞书；只在站内提示「触发本次操作的本人」（金额明细仅本人可见）。
+// 管理员在消息中心仍能看到全部消息，但不会打扰其他角色、也不会把金额发到群里。
+function notifyOperatorOnly(user, title, info, detailLines, refType = 'bill', refId = 0) {
+  if (!user?.id) return null
+  return createNotification([user.id], 'finance', title, noticeContent(info, detailLines), refType, refId, { feishu: false })
+}
 
 // ===== 信息传递统一口径：角色-姓名（如「业务工程师-彭晓蕾」「财务-张海霞」「统结方-柏川」）=====
 const USER_ROLE_NAMES = [
@@ -1043,9 +1049,12 @@ export async function createBill(user, body) {
       `差异：¥${cm.difference}｜增幅：${cm.ratePercent}%（上限 ${cm.limitPercent}%）`,
       cm.exceeded ? '⚠ 增幅超上限，请注意核查' : '增幅在上限内'
     ]
-    notifyRoles([ROLE.FINANCE, ROLE.CLIENT_PM], cm.exceeded ? 'finance' : 'todo',
-      billNoticeTitle(cm.exceeded ? '增幅超限·待核查' : '待查看', bill),
-      billNotice(bill, lines), 'bill', bill.id)
+    if (cm.exceeded) {
+      notifyOperatorOnly(user, billNoticeTitle('增幅超限·待核查', bill), bill, lines, 'bill', bill.id)
+    } else {
+      notifyRoles([ROLE.FINANCE, ROLE.CLIENT_PM], 'todo', billNoticeTitle('待查看', bill),
+        billNotice(bill, lines), 'bill', bill.id)
+    }
     audit('finance.bill.compare', user, bill, cm)
   }
 
@@ -1221,15 +1230,13 @@ function assertIncreaseWithinLimit(bill, user) {
   const check = increaseCheck(bill)
   if (!check.exceeded) return check
   // 超限：推送报警（飞书 + 站内），并阻断本次提交
-  const content = billNotice(bill, [
+  notifyOperatorOnly(user, billNoticeTitle('结算增幅超限·已拦截', bill), bill, [
     '处理结果：结算增幅超限，已拦截本次提交',
     `供应商提交金额：¥${check.base}`,
     `本次结算金额：¥${check.finalAmount}`,
     `增幅：${check.ratePercent}%（上限 ${check.limitPercent}%）`,
     `操作人：${user ? actorText(user) : '-'}`
-  ])
-  notifyRoles([ROLE.CLIENT_PM, ROLE.FINANCE, ROLE.LEADER], 'finance',
-    billNoticeTitle('结算增幅超限·已拦截', bill), content, 'bill', bill.id)
+  ], 'bill', bill.id)
   throw new ApiError(422, 'INCREASE_LIMIT_EXCEEDED',
     `结算金额较供应商提交金额增幅 ${check.ratePercent}%，超过 ${check.limitPercent}% 上限：已推送报警，本次提交被拦截`)
 }
@@ -1389,7 +1396,7 @@ export function checkTotalSubmission(user, body = {}) {
   }
 
   if (exceeded) {
-    const content = noticeContent(
+    notifyOperatorOnly(user, `【统一结算增幅超限·已拦截】${result.period || ''}`.trim(),
       { billNo: '-', projectName: '(统结汇总)', batchName: result.period || '-', period: result.period || '-', supplierName: '统一结算方' },
       [
         '处理结果：统一结算增幅超限，已拦截本次提交',
@@ -1397,9 +1404,7 @@ export function checkTotalSubmission(user, body = {}) {
         `统结方提交总金额：¥${result.submittedTotal}`,
         `增幅：${ratePercent}%（上限 ${limitPercent}%）`,
         `提交人：统结方-${result.submittedBy}`
-      ])
-    notifyRoles([ROLE.CLIENT_PM, ROLE.FINANCE, ROLE.LEADER], 'finance',
-      `【统一结算增幅超限·已拦截】${result.period || ''}`.trim(), content, 'settlement', 0)
+      ], 'settlement', 0)
     audit('finance.settlement.totalCheck', user, { id: 0, billNo: '-', batchName: result.period }, { submittedTotal: result.submittedTotal, base, ratePercent, exceeded: true })
     throw new ApiError(422, 'INCREASE_LIMIT_EXCEEDED',
       `统结方提交总金额 ¥${result.submittedTotal} 较供应商确认合计 ¥${base} 增幅 ${ratePercent}%，超过 ${limitPercent}% 上限：已推送报警，本次提交被拦截`)
@@ -1443,15 +1448,13 @@ export async function calculateBill(user, id, body = {}) {
   detail.increaseCheck = check
   if (check.exceeded) {
     // 保存核算结果，但明确告知：超限则无法提交
-    notifyRoles([ROLE.CLIENT_PM, ROLE.FINANCE, ROLE.LEADER], 'finance',
-      billNoticeTitle('结算增幅超限·待处理', bill),
-      billNotice(bill, [
-        '处理结果：财务核算后金额增幅超限，暂不能确认',
-        `供应商提交金额：¥${check.base}`,
-        `本次结算金额：¥${check.finalAmount}`,
-        `增幅：${check.ratePercent}%（上限 ${check.limitPercent}%）`,
-        `操作人：${actorText(user)}`
-      ]), 'bill', bill.id)
+    notifyOperatorOnly(user, billNoticeTitle('结算增幅超限·待处理', bill), bill, [
+      '处理结果：财务核算后金额增幅超限，暂不能确认',
+      `供应商提交金额：¥${check.base}`,
+      `本次结算金额：¥${check.finalAmount}`,
+      `增幅：${check.ratePercent}%（上限 ${check.limitPercent}%）`,
+      `操作人：${actorText(user)}`
+    ], 'bill', bill.id)
   }
   return detail
 }
@@ -1539,15 +1542,13 @@ export async function confirmBill(user, id, body = {}) {
     const limitPercent = roundPercent(MAX_INCREASE_RATE * 100)
     const exceeded = base > 0 && ratePercent > limitPercent
     if (exceeded) {
-      notifyRoles([ROLE.CLIENT_PM, ROLE.FINANCE, ROLE.LEADER], 'finance',
-        billNoticeTitle('统结增幅超限·已拦截', bill),
-        billNotice(bill, [
-          '处理结果：统结方提交金额增幅超限，已拦截本次二次确认',
-          `供应商确认合计：¥${base}（${supplierCount} 家 / ${billCount} 张）`,
-          `统结方提交：¥${submitted}`,
-          `增幅：${ratePercent}%（上限 ${limitPercent}%）`,
-          `操作人：${actorText(user)}`
-        ]), 'bill', bill.id)
+      notifyOperatorOnly(user, billNoticeTitle('统结增幅超限·已拦截', bill), bill, [
+        '处理结果：统结方提交金额增幅超限，已拦截本次二次确认',
+        `供应商确认合计：¥${base}（${supplierCount} 家 / ${billCount} 张）`,
+        `统结方提交：¥${submitted}`,
+        `增幅：${ratePercent}%（上限 ${limitPercent}%）`,
+        `操作人：${actorText(user)}`
+      ], 'bill', bill.id)
       audit('finance.bill.compareBlock', user, bill, { base, submitted, ratePercent, exceeded: true })
       throw new ApiError(422, 'INCREASE_LIMIT_EXCEEDED',
         `统结方提交 ¥${submitted} 较供应商确认合计 ¥${base} 增幅 ${ratePercent}%，超过 ${limitPercent}% 上限：已推送报警，本次二次确认被拦截`)
