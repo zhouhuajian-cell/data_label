@@ -456,7 +456,7 @@ test('每个环节都有提醒：推送对象为「下一节点角色」，文�
   let hits = notifications.slice(mark).filter(n => n.userIds.includes(ENGINEER_ID))
   assert.equal(hits.length >= 1, true, '指派后应提醒被指派的工程师')
   assert.match(hits[0].title, /工程师/)
-  assert.match(hits[0].content, /结算单 YS/)
+  assert.match(hits[0].content, /结算单：YS/)
   assert.match(hits[0].content, /项目：测试项目-杭州城区/)
   assert.ok(!/¥|金额/.test(hits[0].content), '提醒文案不展示金额')
 
@@ -595,7 +595,7 @@ test('加急催办：催当前环节处理人；同一单 10 分钟内不可重�
   const urged = notifications.slice(mark).filter(n => (n.title || '').includes('加急催办'))
   assert.equal(urged.length, 1, '应产生一条加急催办提醒')
   assert.equal(urged[0].userIds.includes(ENGINEER_ID), true, '催办应发给被指派的工程师')
-  assert.match(urged[0].content, /结算单 YS/)
+  assert.match(urged[0].content, /结算单：YS/)
   assert.match(urged[0].content, /本单今天必须确认/)
   assert.ok(!/¥|金额/.test(urged[0].content), '催办文案同样不展示金额')
 

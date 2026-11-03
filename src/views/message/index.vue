@@ -190,7 +190,7 @@ onUnmounted(() => {
 .msg-icon { width: 40px; height: 40px; border-radius: 50%; background: #f5f7fa; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .msg-content { flex: 1; }
 .msg-title { font-size: 15px; font-weight: 500; margin-bottom: 6px; }
-.msg-desc { color: #606266; font-size: 14px; margin-bottom: 6px; line-height: 1.5; }
+.msg-desc { color: #606266; font-size: 14px; margin-bottom: 6px; line-height: 1.6; white-space: pre-line; }
 .msg-time { color: #909399; font-size: 12px; }
 .msg-go { margin-left: 10px; color: var(--primary); font-weight: 500; }
 .msg-to { margin-left: 8px; color: #e6a23c; }

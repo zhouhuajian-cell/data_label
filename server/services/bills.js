@@ -256,14 +256,31 @@ function audit(action, user, bill, extra = {}) {
   auditLogs.push({ action, actorId: user.id, actorName: user.userName, billNo: bill.billNo, billId: bill.id, at: nowText(), ...extra })
 }
 
-// 统一的单据摘要，保证各环节飞书/站内消息口径一致
-// 提醒/待办里的单据信息：只展示项目信息，不展示金额
-function billSummary(bill) {
-  const parts = [`结算单 ${bill.billNo}`]
-  if (bill.projectName) parts.push(`项目：${bill.projectName}`)
-  if (bill.batchName) parts.push(`批次：${bill.batchName}`)
-  if (bill.supplierName) parts.push(`供应商：${bill.supplierName}`)
-  return parts.join(' · ')
+// ===== 通知卡片统一模板（站内 + 飞书同一文案）=====
+// 版式：单据信息固定顺序、一行一项 → 空行 → 处理信息（当前环节/处理人/待办事项或结果）→ 空行 → 页脚
+// 提醒类消息不展示金额（金额口径敏感，统一不在通知里出现）。
+function noticeInfoLines(info) {
+  return [
+    `结算单：${info.billNo || '-'}`,
+    `项目：${info.projectName || '-'}`,
+    `批次：${info.batchName || '-'}`,
+    `结算周期：${info.period || '-'}`,
+    `供应商：${info.supplierName || '-'}`
+  ]
+}
+function noticeContent(info, detailLines = []) {
+  const lines = noticeInfoLines(info)
+  if (detailLines.length) lines.push('', ...detailLines)
+  lines.push('', `数据协作平台 · ${nowText()}`)
+  return lines.join('\n')
+}
+function billNotice(bill, detailLines = []) {
+  return noticeContent(bill || {}, detailLines)
+}
+// 标题统一为「【事件】单号 · 项目」，事件文案沿用既有关键字（便于检索）
+function billNoticeTitle(event, bill) {
+  const project = bill?.projectName ? ` · ${bill.projectName}` : ''
+  return `【${event}】${bill?.billNo || ''}${project}`
 }
 
 // ===== 信息传递统一口径：角色-姓名（如「业务工程师-彭晓蕾」「财务-张海霞」「统结方-柏川」）=====
@@ -330,14 +347,22 @@ function notifyNextStage(bill) {
     notifyAssignNeeded(bill)
     return
   }
-  notifyRoles([stage.roleType], 'finance', `【待${stage.short}确认】${handlerText(bill, stage)}`,
-    `${billSummary(bill)}\n当前环节：${handlerText(bill, stage)}（请登录平台处理）`, 'bill', bill.id)
+  notifyRoles([stage.roleType], 'finance', billNoticeTitle(`待${stage.short}确认`, bill),
+    billNotice(bill, [
+      `当前环节：${stage.label}`,
+      `处理人：${handlerText(bill, stage)}`,
+      `待办事项：请登录平台完成「${stage.label}」`
+    ]), 'bill', bill.id)
 }
 
 // 提醒财务指派工程师（供应商提交后的第一个动作）
 function notifyAssignNeeded(bill) {
-  notifyRoles([ROLE.FINANCE], 'todo', `【待办】指派工程师确认数据：${bill.batchName}`,
-    `${billSummary(bill)}\n供应商-${bill.supplierName} 已提交，请 ${roleHoldersText('财务', ROLE.FINANCE)} 指定工程师对该项目做数据确认`, 'bill', bill.id)
+  notifyRoles([ROLE.FINANCE], 'todo', billNoticeTitle('待指派工程师', bill),
+    billNotice(bill, [
+      '当前环节：待指派工程师',
+      `处理人：${roleHoldersText('财务', ROLE.FINANCE)}`,
+      `待办事项：供应商-${bill.supplierName} 已提交，请指定工程师对该项目做数据确认`
+    ]), 'bill', bill.id)
 }
 
 // 指派工程师：仅财务（张海霞）；指派后只通知被指派的那个工程师
@@ -465,9 +490,14 @@ export async function urgeBill(user, id, body = {}) {
   bill.updatedAt = nowText()
   await saveBill(bill)
 
-  createNotification(targetIds, 'todo', `【加急催办】${bill.batchName}`,
-    `${billSummary(bill)}\n${actorText(user)} 加急催办：当前环节「${targetLabel}」，请尽快处理` + (note ? `\n催办说明：${note}` : ''),
-    'bill', bill.id)
+  const urgeStage = currentStage(bill)
+  createNotification(targetIds, 'todo', billNoticeTitle('加急催办', bill),
+    billNotice(bill, [
+      `当前环节：${urgeStage ? urgeStage.label : (targetLabel || '-')}`,
+      `处理人：${targetLabel}`,
+      `待办事项：${actorText(user)} 加急催办，请尽快处理`,
+      ...(note ? [`催办说明：${note}`] : [])
+    ]), 'bill', bill.id)
   audit('finance.bill.urge', user, bill, { target: targetLabel, targetCount: targetIds.length, note })
   return getBillDetail(user, bill.id)
 }
@@ -512,7 +542,7 @@ export async function resubmitSettlement(user, id, body = {}) {
     submittedBy: actorText(user),
     resubmittedAt: nowText()
   }
-  // 只认本轮记录：供应商重提后整条链路重新走，不沿用上一轮的统结提交
+  // 只认本轮记录：供应商重提后整条链路重新走，不沿用上一轮的统结提交
   const last = [...confirmsOfCurrentRound(bill)].reverse().find(c => c.stageKey === 'SETTLEMENT')
   if (last) last.settlement = settlement
   else {
@@ -577,13 +607,19 @@ export async function assignEngineer(user, id, body = {}) {
   const removed = prevIds.filter(x => !engineers.some(e => e.id === x))
   if (removed.length) {
     markRefReadForUsers('bill', bill.id, removed)
-    createNotification(removed, 'todo', `【已改派】${bill.batchName}`,
-      `${billSummary(bill)}\n本单已由 ${actorText(user)} 改派给 业务工程师-${names}，你无需再确认`, 'bill', bill.id)
+    createNotification(removed, 'todo', billNoticeTitle('已改派', bill),
+      billNotice(bill, [
+        `处理结果：本单已由 ${actorText(user)} 改派给 业务工程师-${names}，你无需再确认`
+      ]), 'bill', bill.id)
   }
 
   // 通知每一位被指派者（多人确认时两人都要处理）
-  createNotification(engineers.map(e => e.id), 'todo', `【待工程师确认】${bill.batchName}`,
-    `${billSummary(bill)}\n由 ${actorText(user)} 指派给 业务工程师-${names} 做本单数据确认${engineers.length > 1 ? `（多人确认，${engineers.length} 位全部确认后才流转）` : ''}，请核对数据明细与成本中心比例后确认`, 'bill', bill.id)
+  createNotification(engineers.map(e => e.id), 'todo', billNoticeTitle('待工程师确认', bill),
+    billNotice(bill, [
+      '当前环节：工程师确认',
+      `处理人：业务工程师-${names}`,
+      `待办事项：由 ${actorText(user)} 指派做本单数据确认${engineers.length > 1 ? `（多人确认，${engineers.length} 位全部确认后才流转）` : ''}，请核对数据明细与成本中心比例后确认`
+    ]), 'bill', bill.id)
   return getBillDetail(user, bill.id)
 }
 
@@ -607,15 +643,17 @@ export function listSupplierNames(user) {
 // 环节通过：回执给单据提交人（按用户 id 精确推送，而非按角色）
 function notifySubmitter(bill, stage, confirmerName, nextStage) {
   if (!bill.createdBy) return
-  const tail = nextStage ? `已流转至 ${handlerText(bill, nextStage)}` : '确认流程已全部通过'
-  createNotification([bill.createdBy], 'finance', `【已通过${stage.label}】${confirmerName}`,
-    `${billSummary(bill)}\n${roleNameOf(stage)}-${confirmerName} 已确认通过，${tail}`, 'bill', bill.id)
+  const detailLines = [`处理结果：${roleNameOf(stage)}-${confirmerName} 已确认通过`]
+  if (nextStage) detailLines.push(`下一环节：${handlerText(bill, nextStage)}`)
+  else detailLines.push('状态：确认流程已全部通过')
+  createNotification([bill.createdBy], 'finance', billNoticeTitle(`已通过${stage.label}`, bill),
+    billNotice(bill, detailLines), 'bill', bill.id)
 }
 
 // 只通知该单据所属供应商（不是全部供应商）
-function notifySupplier(bill, title, content) {
+function notifySupplier(bill, title, detailLines) {
   notifyByRole(bill.supplierName, [ROLE.VENDOR_TL], 'finance', title,
-    `${billSummary(bill)}\n${content}`, 'bill', bill.id)
+    billNotice(bill, detailLines), 'bill', bill.id)
 }
 
 // 确认链进度（列表与详情共用）：每个节点标记 已确认/当前待确认/被驳回
@@ -754,7 +792,7 @@ function filterBills(user, query) {
     // 用 isMyTurn：第一环节按被指派的工程师算，避免改派后两个工程师都看到同一张单
     list = list.filter(b => isMyTurn(user, b))
   } else if (scope === 'done') {
-    // 只认本轮的确认：供应商重提后，该单在本轮尚未经我确认，不应出现在「已处理」里
+    // 只认本轮的确认：供应商重提后，该单在本轮尚未经我确认，不应出现在「已处理」里
     list = list.filter(b => confirmsOfCurrentRound(b).some(c => c.userId === user.id))
   }
 
@@ -893,7 +931,7 @@ function pushSupplierSubmit(bill, user, { mode = 'create', comment = '' } = {}) 
 }
 
 function canEdit(bill) {
-  // 只认本轮确认：驳回重提后是新的一轮，供应商仍可编辑（整条链路重新走）
+  // 只认本轮确认：驳回重提后是新的一轮，供应商仍可编辑（整条链路重新走）
   const noConfirmYet = confirmsOfCurrentRound(bill).length === 0
   return bill.status === 'REJECTED' || (bill.status === 'PENDING_BIZ' && noConfirmYet)
 }
@@ -998,16 +1036,16 @@ export async function createBill(user, body) {
     await saveBill(bill)
     const cm = bill.comparison
     const lines = [
-      billSummary(bill),
-      `对比口径：同项目「其他供应商确认金额合计」`,
+      '处理结果：统结方提交金额对比',
+      '对比口径：同项目「其他供应商确认金额合计」',
       `其他供应商合计：¥${cm.base}（${cm.supplierCount} 家）`,
       `统结方-${bill.supplierName} 本次提交：¥${cm.submitted}`,
       `差异：¥${cm.difference}｜增幅：${cm.ratePercent}%（上限 ${cm.limitPercent}%）`,
       cm.exceeded ? '⚠ 增幅超上限，请注意核查' : '增幅在上限内'
     ]
     notifyRoles([ROLE.FINANCE, ROLE.CLIENT_PM], cm.exceeded ? 'finance' : 'todo',
-      `${cm.exceeded ? '【增幅超限·待核查】' : '【待查看】'}统结方提交金额对比：${bill.batchName}`,
-      lines.join('\n'), 'bill', bill.id)
+      billNoticeTitle(cm.exceeded ? '增幅超限·待核查' : '待查看', bill),
+      billNotice(bill, lines), 'bill', bill.id)
     audit('finance.bill.compare', user, bill, cm)
   }
 
@@ -1120,16 +1158,21 @@ function notifyPartialBizConfirm(bill, confirmer) {
   const done = assigneesOf(bill).filter(a => confirmedInStage(bill, 'BIZ', a.id)).map(a => a.name).join('、')
   const wait = pending.map(a => a.name).join('、')
   if (bill.createdBy) {
-    createNotification([bill.createdBy], 'finance', `【部分确认】${bill.batchName}`,
-      `${billSummary(bill)}
-业务工程师-${confirmer.userName} 已确认；还需 ${wait} 确认后才进入下一环节`, 'bill', bill.id)
+    createNotification([bill.createdBy], 'finance', billNoticeTitle('部分确认', bill),
+      billNotice(bill, [
+        `处理结果：业务工程师-${confirmer.userName} 已确认`,
+        `待办事项：还需 业务工程师-${wait} 确认后才进入下一环节`
+      ]), 'bill', bill.id)
   }
   if (pending.length) {
     // 点名列出「还需谁确认」而不是只说"你"：这条会同时发给多位未确认者，点名才不会让人误解
     // （曾出现「赵晓伟 已确认，请你核对」——发给赵晓伟本人时读起来自相矛盾）
-    createNotification(pending.map(a => a.id), 'todo', `【待工程师确认】${bill.batchName}`,
-      `${billSummary(bill)}
-业务工程师-${done} 已确认，本单为多人确认，还需 业务工程师-${wait} 核对后确认`, 'bill', bill.id)
+    createNotification(pending.map(a => a.id), 'todo', billNoticeTitle('待工程师确认', bill),
+      billNotice(bill, [
+        '当前环节：工程师确认',
+        `处理人：业务工程师-${wait}`,
+        `待办事项：业务工程师-${done} 已确认，本单为多人确认，还需你核对后确认`
+      ]), 'bill', bill.id)
   }
 }
 
@@ -1137,12 +1180,10 @@ function notifySettlementSubmitter(bill) {
   // 免统结供应商（如康尼瑞行）与统结方无合同、单据不走统结环节，无需抄送统结方
   if (isSettlementExempt(bill)) return
   const scope = computeSupplierConfirmedTotal({ period: bill.period })
-  const content = [
-    billSummary(bill),
-    `结算周期：${bill.period || '(未指定)'}`,
+  const baseLines = [
     `当前供应商确认合计：¥${scope.supplierTotal}（${scope.supplierCount} 家 / ${scope.billCount} 张）`,
-    '本单已走完全部确认（含 OA 结算确认）'
-  ].join(' · ')
+    '处理结果：本单已走完全部确认（含 OA 结算确认）'
+  ]
   const title = `【结算完成】本周期统结数据已确认${bill.period ? '（' + bill.period + '）' : ''}`
   // 只发给「统一结算方（柏川）」本人：账号上标记 isSettlementParty；
   // 未指定时先发给内部跟进（甲方PM/财务），绝不群发全体供应商
@@ -1150,12 +1191,13 @@ function notifySettlementSubmitter(bill) {
   if (parties.length) {
     const partyText = parties.map(u => `统结方-${u.userName}`).join('、')
     createNotification(parties.map(u => u.id), 'finance', title,
-      content.replace('本单已走完全部确认（含 OA 结算确认）', `${partyText} 提交的统结数据已通过财务二次确认，本单已走完全部确认（含 OA 结算确认）`), 'settlement', bill.id)
+      billNotice(bill, baseLines), 'settlement', bill.id)
     notifyRoles([ROLE.CLIENT_PM, ROLE.FINANCE], 'finance',
-      `【已抄送 ${partyText}】${bill.batchName}`, content, 'settlement', bill.id)
+      `【已抄送 ${partyText}】${bill.billNo}${bill.projectName ? ' · ' + bill.projectName : ''}`,
+      billNotice(bill, baseLines), 'settlement', bill.id)
   } else {
     notifyRoles([ROLE.CLIENT_PM, ROLE.FINANCE], 'todo', title,
-      content + '（尚未在账号上指定「统一结算方」，请先指定后由统结方提交）', 'settlement', bill.id)
+      billNotice(bill, [...baseLines, '待办事项：尚未在账号上指定「统一结算方」，请先指定后由统结方提交']), 'settlement', bill.id)
   }
 }
 
@@ -1179,15 +1221,15 @@ function assertIncreaseWithinLimit(bill, user) {
   const check = increaseCheck(bill)
   if (!check.exceeded) return check
   // 超限：推送报警（飞书 + 站内），并阻断本次提交
-  const content = [
-    billSummary(bill),
+  const content = billNotice(bill, [
+    '处理结果：结算增幅超限，已拦截本次提交',
     `供应商提交金额：¥${check.base}`,
     `本次结算金额：¥${check.finalAmount}`,
     `增幅：${check.ratePercent}%（上限 ${check.limitPercent}%）`,
-    `提交人：${user ? actorText(user) : '-'}`
-  ].join('\n')
+    `操作人：${user ? actorText(user) : '-'}`
+  ])
   notifyRoles([ROLE.CLIENT_PM, ROLE.FINANCE, ROLE.LEADER], 'finance',
-    `【结算增幅超限·已拦截】${bill.batchName}`, content, 'bill', bill.id)
+    billNoticeTitle('结算增幅超限·已拦截', bill), content, 'bill', bill.id)
   throw new ApiError(422, 'INCREASE_LIMIT_EXCEEDED',
     `结算金额较供应商提交金额增幅 ${check.ratePercent}%，超过 ${check.limitPercent}% 上限：已推送报警，本次提交被拦截`)
 }
@@ -1347,15 +1389,17 @@ export function checkTotalSubmission(user, body = {}) {
   }
 
   if (exceeded) {
-    const lines = [
-      `结算周期：${result.period || '(未指定)'}`,
-      `供应商确认金额合计：¥${base}（${scope.supplierCount} 家供应商 / ${scope.billCount} 张单）`,
-      `统结方提交总金额：¥${result.submittedTotal}`,
-      `增幅：${ratePercent}%（上限 ${limitPercent}%）`,
-      `提交人：统结方-${result.submittedBy}`
-    ]
+    const content = noticeContent(
+      { billNo: '-', projectName: '(统结汇总)', batchName: result.period || '-', period: result.period || '-', supplierName: '统一结算方' },
+      [
+        '处理结果：统一结算增幅超限，已拦截本次提交',
+        `供应商确认金额合计：¥${base}（${scope.supplierCount} 家供应商 / ${scope.billCount} 张单）`,
+        `统结方提交总金额：¥${result.submittedTotal}`,
+        `增幅：${ratePercent}%（上限 ${limitPercent}%）`,
+        `提交人：统结方-${result.submittedBy}`
+      ])
     notifyRoles([ROLE.CLIENT_PM, ROLE.FINANCE, ROLE.LEADER], 'finance',
-      `【统一结算增幅超限·已拦截】${result.period || ''}`.trim(), lines.join('\n'), 'settlement', 0)
+      `【统一结算增幅超限·已拦截】${result.period || ''}`.trim(), content, 'settlement', 0)
     audit('finance.settlement.totalCheck', user, { id: 0, billNo: '-', batchName: result.period }, { submittedTotal: result.submittedTotal, base, ratePercent, exceeded: true })
     throw new ApiError(422, 'INCREASE_LIMIT_EXCEEDED',
       `统结方提交总金额 ¥${result.submittedTotal} 较供应商确认合计 ¥${base} 增幅 ${ratePercent}%，超过 ${limitPercent}% 上限：已推送报警，本次提交被拦截`)
@@ -1400,10 +1444,14 @@ export async function calculateBill(user, id, body = {}) {
   if (check.exceeded) {
     // 保存核算结果，但明确告知：超限则无法提交
     notifyRoles([ROLE.CLIENT_PM, ROLE.FINANCE, ROLE.LEADER], 'finance',
-      `【结算增幅超限·待处理】${bill.batchName}`,
-      [billSummary(bill), `供应商提交金额：¥${check.base}`, `本次结算金额：¥${check.finalAmount}`,
+      billNoticeTitle('结算增幅超限·待处理', bill),
+      billNotice(bill, [
+        '处理结果：财务核算后金额增幅超限，暂不能确认',
+        `供应商提交金额：¥${check.base}`,
+        `本次结算金额：¥${check.finalAmount}`,
         `增幅：${check.ratePercent}%（上限 ${check.limitPercent}%）`,
-        `操作人：${actorText(user)}`].join('\n'), 'bill', bill.id)
+        `操作人：${actorText(user)}`
+      ]), 'bill', bill.id)
   }
   return detail
 }
@@ -1481,7 +1529,7 @@ export async function confirmBill(user, id, body = {}) {
   // 财务二次确认：供应商合计 vs 统结方提交合计，超 3.5% 报警且确认不了
   let comparisonInfo = null
   if (stage.key === 'FINANCE2') {
-    // 只认本轮：统结方重新提交后以本轮提交额为准，否则会拿上一轮的金额做对比
+    // 只认本轮：统结方重新提交后以本轮提交额为准，否则会拿上一轮的金额做对比
     const settled = [...confirmsOfCurrentRound(bill)].reverse().find(c => c.stageKey === 'SETTLEMENT' && c.settlement)
     const submitted = settled ? Number(settled.settlement.submittedTotal) || 0 : 0
     if (!submitted) throw new ApiError(409, 'SETTLEMENT_REQUIRED', '统结方尚未提交数据，无法进行财务二次确认')
@@ -1492,12 +1540,14 @@ export async function confirmBill(user, id, body = {}) {
     const exceeded = base > 0 && ratePercent > limitPercent
     if (exceeded) {
       notifyRoles([ROLE.CLIENT_PM, ROLE.FINANCE, ROLE.LEADER], 'finance',
-        `【统结增幅超限·已拦截】${bill.batchName}`,
-        [billSummary(bill),
+        billNoticeTitle('统结增幅超限·已拦截', bill),
+        billNotice(bill, [
+          '处理结果：统结方提交金额增幅超限，已拦截本次二次确认',
           `供应商确认合计：¥${base}（${supplierCount} 家 / ${billCount} 张）`,
           `统结方提交：¥${submitted}`,
           `增幅：${ratePercent}%（上限 ${limitPercent}%）`,
-          `操作人：${actorText(user)}`].join('\n'), 'bill', bill.id)
+          `操作人：${actorText(user)}`
+        ]), 'bill', bill.id)
       audit('finance.bill.compareBlock', user, bill, { base, submitted, ratePercent, exceeded: true })
       throw new ApiError(422, 'INCREASE_LIMIT_EXCEEDED',
         `统结方提交 ¥${submitted} 较供应商确认合计 ¥${base} 增幅 ${ratePercent}%，超过 ${limitPercent}% 上限：已推送报警，本次二次确认被拦截`)
@@ -1549,11 +1599,14 @@ export async function confirmBill(user, id, body = {}) {
   }
   if (bill.status === 'APPROVED') {
     // 末节点（OA 结算专员）通过：回执供应商（仅本单所属）与甲方PM
-    notifySupplier(bill, `【已全部确认】${bill.batchName}`,
-      `${roleNameOf(stage)}-${user.userName} 已确认通过，确认链（${
-        stageListOf(bill).map(s => s.short || s.label).join('→')}）已全部通过。`)
-    notifyRoles([ROLE.CLIENT_PM], 'finance', `【结算单已完成】${bill.batchName}`,
-      `${billSummary(bill)}\n${roleNameOf(stage)}-${user.userName} 已确认通过，确认链全部通过。`, 'bill', bill.id)
+    notifySupplier(bill, billNoticeTitle('已全部确认', bill), [
+      `处理结果：${roleNameOf(stage)}-${user.userName} 已确认通过，确认链（${
+        stageListOf(bill).map(s => s.short || s.label).join('→')}）已全部通过`
+    ])
+    notifyRoles([ROLE.CLIENT_PM], 'finance', billNoticeTitle('结算单已完成', bill),
+      billNotice(bill, [
+        `处理结果：${roleNameOf(stage)}-${user.userName} 已确认通过，确认链全部通过`
+      ]), 'bill', bill.id)
     notifySubmitter(bill, stage, user.userName, null)
     // 单据全部确认通过 → 抄送统一结算方（完成通知，飞书 + 站内）
     notifySettlementSubmitter(bill)
@@ -1586,8 +1639,11 @@ export async function rejectBill(user, id, body = {}) {
   await saveBill(bill)
 
   audit('finance.bill.reject', user, bill, { stageKey: stage.key, reason })
-  notifySupplier(bill, `结算单被驳回：${bill.batchName}`,
-    `结算单 ${bill.billNo} 被 ${roleNameOf(stage)}-${user.userName} 驳回：${reason}，请修正后重新提交`)
+  notifySupplier(bill, billNoticeTitle('结算单被驳回', bill), [
+    `处理结果：结算单被 ${roleNameOf(stage)}-${user.userName} 驳回`,
+    `驳回原因：${reason}`,
+    '下一步：请修正后重新提交'
+  ])
   return getBillDetail(user, bill.id)
 }
 
@@ -1604,7 +1660,7 @@ export async function resubmitBill(user, id) {
   bill.rejectReason = ''
   bill.currentStage = 0
   bill.resubmitCount = (bill.resubmitCount || 0) + 1
-  bill.finance = null // 金额可能变化，旧核算作废
+  bill.finance = null // 金额可能变化，旧核算作废
   bill.comparison = null // 上一轮的统结对比结果同样作废
   // 把上一轮确认记录显式标记为旧轮次（此后不再依赖时间推断）
   for (const c of bill.confirms || []) {
@@ -1621,14 +1677,19 @@ export async function resubmitBill(user, id) {
   const financeIds = users.filter(u => !u.disabled && hasRole(u, ROLE.FINANCE)).map(u => u.id)
   if (financeIds.length) {
     const kept = assigneesOf(bill).map(a => a.name).filter(Boolean)
-    createNotification(financeIds, 'todo', `【已重新提交】${bill.batchName}`,
-      `${billSummary(bill)}\n${actorText(user)} 修正后重新提交（第 ${bill.resubmitCount} 次）。` +
-      `${kept.length ? `默认仍由 业务工程师-${kept.join('、')} 确认` : '该单尚未指派工程师'}；如需变更确认人，请在「财务结算」页重新指派。`,
-      'bill', bill.id)
+    createNotification(financeIds, 'todo', billNoticeTitle('已重新提交', bill),
+      billNotice(bill, [
+        `处理结果：${actorText(user)} 修正后重新提交（第 ${bill.resubmitCount} 次）`,
+        `处理人：${kept.length ? `业务工程师-${kept.join('、')}` : '尚未指派工程师'}`,
+        '待办事项：如需变更确认人，请在「财务结算」页重新指派'
+      ]), 'bill', bill.id)
   }
   if (bill.createdBy) {
-    createNotification([bill.createdBy], 'finance', `【已重新提交】${bill.batchName}`,
-      `${billSummary(bill)}\n${actorText(user)} 修正后重新提交（第 ${bill.resubmitCount} 次），确认流程已重新开始，当前环节：${handlerText(bill, BILL_STAGES[0])}`, 'bill', bill.id)
+    createNotification([bill.createdBy], 'finance', billNoticeTitle('已重新提交', bill),
+      billNotice(bill, [
+        `处理结果：${actorText(user)} 修正后重新提交（第 ${bill.resubmitCount} 次），确认流程已重新开始`,
+        `下一环节：${handlerText(bill, BILL_STAGES[0])}`
+      ]), 'bill', bill.id)
   }
   return getBillDetail(user, bill.id)
 }
@@ -1746,9 +1807,9 @@ export async function exportBillsCsv(user, query) {
 // 统结方在某张单据上提交的金额（金额由统结明细自动汇总而来）。
 // 取最后一次提交：统结方改正后重提时以最新一次为准。未走到该环节返回 null。
 export function settlementSubmittedOf(bill) {
-  const round = bill.resubmitCount || 0
-  // 只认本轮：重提后上一轮的统结金额不再作为统计口径
-  const recs = (bill.confirms || []).filter(c => c.stageKey === 'SETTLEMENT' && c.settlement &&
+  const round = bill.resubmitCount || 0
+  // 只认本轮：重提后上一轮的统结金额不再作为统计口径
+  const recs = (bill.confirms || []).filter(c => c.stageKey === 'SETTLEMENT' && c.settlement &&
     (typeof c.round !== 'number' || c.round === round))
   if (!recs.length) return null
   const v = Number(recs[recs.length - 1].settlement?.submittedTotal)
