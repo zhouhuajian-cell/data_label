@@ -1190,7 +1190,8 @@ function notifySettlementSubmitter(bill) {
   if (isSettlementExempt(bill)) return
   const scope = computeSupplierConfirmedTotal({ period: bill.period })
   const baseLines = [
-    `当前供应商确认合计：¥${scope.supplierTotal}（${scope.supplierCount} 家 / ${scope.billCount} 张）`,
+    // 卡片不展示金额（金额口径只在平台内查看），只保留本期覆盖范围
+    `本期确认范围：${scope.supplierCount} 家供应商 / ${scope.billCount} 张结算单`,
     '处理结果：本单已走完全部确认（含 OA 结算确认）'
   ]
   const title = `【结算完成】本周期统结数据已确认${bill.period ? '（' + bill.period + '）' : ''}`

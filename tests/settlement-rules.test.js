@@ -280,7 +280,8 @@ test('抄送统结方：末节点通过后推送飞书+站内待办', async () =
   let notice = created.find(n => /结算完成/.test(n.title || ''))
   assert.ok(notice, '应生成结算完成通知')
   assert.match(notice.title, /结算完成/)
-  assert.match(notice.content, /当前供应商确认合计/)
+  assert.match(notice.content, /本期确认范围/)
+  assert.ok(!/¥/.test(notice.content), '完成通知卡片不展示金额')
   // 尚未指定统一结算方时：只发给内部跟进，不群发全体供应商
   const supplierIds = users.filter(u => !u.disabled && hasRole(u, 3)).map(u => u.id)
   assert.equal(created.some(n => n.type === 'todo' && n.userIds.some(id => supplierIds.includes(id))), false,
